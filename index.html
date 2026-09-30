@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Hungry Fish Frenzy - Ocean Ultimate</title>
+<style>
+:root{--ink:#fff6d6;--gold:#ffb02e}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:#021226;overflow:hidden;touch-action:none;font-family:"Trebuchet MS","Sarabun",sans-serif;user-select:none;-webkit-user-select:none}
+canvas{display:block;width:100%;height:100%}
+#ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--ink);text-align:center;background:rgba(2,15,35,.88);padding:14px;overflow:auto;z-index:10}
+#ov.hide{display:none}
+h1{margin:0;font-size:clamp(26px,5vw,48px);color:var(--gold);text-shadow:0 4px 0 #a5421a,0 8px 18px #000a}
+p{margin:0;max-width:500px;line-height:1.4;font-size:14px}
+.btn-group{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+button{font:inherit;font-size:16px;color:var(--ink);background:rgba(20,80,140,.9);border:2px solid #8fd3ff;border-radius:30px;padding:8px 20px;min-width:150px;cursor:pointer;transition:transform .1s}
+button:active{transform:scale(.95)}
+button.special{background:linear-gradient(135deg,#e65100,#f57c00);border-color:#ffe0b2}
+.badge{background:#ffb02e;color:#000;padding:2px 8px;border-radius:12px;font-weight:bold;font-size:12px}
+.merge-box{display:flex;align-items:center;justify-content:center;gap:15px;background:rgba(255,255,255,.08);padding:15px;border-radius:15px;margin:10px 0}
+#boss-warning{position:fixed;inset:0;border:16px solid red;box-shadow:inset 0 0 40px red;pointer-events:none;z-index:5;display:none;animation:blink .5s infinite alternate}
+@keyframes blink{from{opacity:0.3}to{opacity:1}}
+</style>
+</head>
+<body>
+<div id="boss-warning"></div>
+<canvas id="c"></canvas>
+<div id="ov"></div>
+
+<script>
+const $=id=>document.getElementById(id),cv=$('c'),ctx=cv.getContext('2d'),ov=$('ov');
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+const WORLD = { w: 3200, h: 1600, surfaceY: 300 }; // กำหนดความลึกก้นทะเลชัดเจน
+let W, H, u=1;
+let camera = { x: 0, y: 0, zoom: 1 };
+
+let corals = [], rocks = [], seaweeds = [], wildFish = [], boats = [];
+
+function generateWorld(){
+  corals = []; rocks = []; seaweeds = []; wildFish = []; boats = [];
+  
+  // ก้อนหินโทนสีเทาสมจริง กองอยู่ก้นทะเล
+  for(let i=0; i<40; i++){
+    rocks.push({
+      x: Math.random()*WORLD.w,
+      y: WORLD.h - 30 - Math.random()*40,
+      r: 30+Math.random()*40,
+      shade: 90 + Math.floor(Math.random()*30)
+    });
+  }
+
+  // ปะการังน่ารักๆ ใต้น้ำ
+  for(let i=0; i<50; i++){
+    corals.push({
+      x: Math.random()*WORLD.w,
+      y: WORLD.h - 15 - Math.random()*30,
+      size: 20+Math.random()*30,
+      type: Math.floor(Math.random()*3),
+      hue: [340, 20, 170, 280][Math.floor(Math.random()*4)]
+    });
+  }
+
+  // สาหร่ายพริ้วไหว
+  for(let i=0; i<45; i++){
+    seaweeds.push({
+      x: Math.random()*WORLD.w,
+      y: WORLD.h - 5,
+      h: 70 + Math.random()*100,
+      phase: Math.random()*Math.PI*2
+    });
+  }
+
+  // ลูกปลาฟรีสีส้ม
+  for(let i=0; i<30; i++){
+    wildFish.push({
+      x: Math.random()*WORLD.w,
+      y: WORLD.surfaceY + 80 + Math.random()*(WORLD.h - WORLD.surfaceY - 150),
+      r: 7 * u, hue: 28, vx: (Math.random()-.5)*15, vy: (Math.random()-.5)*15
+    });
+  }
+
+  // เรือมนุษย์เหนือน้ำแบบสวยงาม
+  for(let i=0; i<3; i++){
+    boats.push({ x: i*1000 + 300, y: WORLD.surfaceY - 22 });
+  }
+}
+
+function resize(){
+  const d=devicePixelRatio||1; W=innerWidth; H=innerHeight; u=clamp(H/520,.6,1.4);
+  cv.width=W*d; cv.height=H*d; ctx.setTransform(d,0,0,d,0,0);
+}
+addEventListener('resize',resize); resize(); generateWorld();
+
+// ระบบบันทึกข้อมูล
+let playerProgress = { level: 1, exp: 0, money: 0, fishTier: 1, bestScore: 0 };
+try{
+  const saved = localStorage.getItem('hff_ultimate_save');
+  if(saved) playerProgress = JSON.parse(saved);
+}catch(e){}
+
+function saveGame(){
+  try{ localStorage.setItem('hff_ultimate_save', JSON.stringify(playerProgress)); }catch(e){}
+}
+
+const S = {
+  mode:'menu', stage:1, score:0, t:0, time:180, fish:[], parts:[], divers:[],
+  ban:0, bt:'', eaten:0, mainEaten:0, bossSpawned:false, rank: 1
+};
+
+// ตัวละครผู้เล่น พร้อมระบบกลั้นหายใจ
+const P = {
+  x: WORLD.w/2, y: WORLD.h/2, vx:0, vy:0, dir:1, r:16, kids:[], hue:190,
+  air: 100, isAboveWater: false, jumpVy: 0
+};
+const keys = {};
+
+/* ---------- ระบบเสียง ---------- */
+let AC, mute=false;
+function initAudio(){try{AC=AC||new(window.AudioContext||window.webkitAudioContext)();AC.resume()}catch(e){}}
+function tone(ty,f0,f1,d,v,dl){setTimeout(()=>{if(mute||!AC)return;const t=AC.currentTime,o=AC.createOscillator(),g=AC.createGain();o.type=ty;o.frequency.setValueAtTime(f0,t);o.frequency.exponentialRampToValueAtTime(f1,t+d);g.gain.setValueAtTime(v,t);g.gain.exponentialRampToValueAtTime(.001,t+d);o.connect(g);g.connect(AC.destination);o.start(t);o.stop(t+d)},dl||0)}
+
+const SND={
+  eat:()=>tone('sine',400,900,.1,.2),
+  steal:()=>tone('triangle',600,1100,.1,.2),
+  splash:()=>tone('triangle',180,500,.35,.35),
+  die:()=>{tone('sawtooth',250,30,.8,.3);tone('square',90,20,.8,.2)},
+  win:()=>[523,659,784,1047].forEach((f,i)=>tone('triangle',f,f,.2,.2,i*100))
+};
+const snd=n=>SND[n]();
+addEventListener('pointerdown',initAudio);
+
+/* ---------- UI หน้าเมนู ---------- */
+function menu(){
+  S.mode='menu'; ov.className='';
+  $('boss-warning').style.display='none';
+  const reqExp = playerProgress.level * 400;
+  ov.innerHTML = `
+    <h1>Hungry Fish Frenzy</h1>
+    <p><span class="badge">Lv. ${playerProgress.level}</span> EXP: ${playerProgress.exp} / ${reqExp} · 💰 เงิน: ${playerProgress.money}</p>
+    
+    <div class="merge-box">
+      <div>
+        <h3 style="margin:0">ยศปลาของคุณ: Tier ${playerProgress.fishTier}</h3>
+        <p style="font-size:12px;margin:4px 0;color:#ffd9a0">สะสมเงินจากการเล่นเพื่ออัปเกรดยศตัวละคร!</p>
+      </div>
+      <button style="min-width:120px" onclick="buyAndMerge()">อัปเกรดยศปลา (💰 150)</button>
+    </div>
+
+    <div class="btn-group">
+      <button onclick="startGame()" class="special">เริ่มเล่นเกม</button>
+      <button onclick="help()">วิธีเล่น</button>
+      <button onclick="tg(this)">เสียง: ${(mute?'ปิด':'เปิด')}</button>
+    </div>
+    <p style="font-size:12px;opacity:.7;margin-top:5px">คะแนนสูงสุด: ${playerProgress.bestScore}</p>
+  `;
+}
+
+function buyAndMerge(){
+  if(playerProgress.money >= 150){
+    playerProgress.money -= 150;
+    playerProgress.fishTier++;
+    saveGame();
+    menu();
+  } else {
+    alert("เงินไม่พอ! สะสมเงินจากการเล่นในเกมก่อนนะครับ");
+  }
+}
+
+function tg(b){ mute=!mute; b.textContent='เสียง: '+(mute?'ปิด':'เปิด'); }
+
+function help(){
+  ov.innerHTML = `
+    <h2>คำแนะนำการเล่น</h2>
+    <ul style="text-align:left;font-size:13px;line-height:1.6">
+      <li><b>การควบคุม:</b> เลื่อนสัมผัสที่ **ซีกซ้ายของหน้าจอ**</li>
+      <li><b>เตือนบนบก:</b> อยู่นานเกินไป หลอดเลือดจะลดจนถึงแก่ชีวิต!</li>
+      <li><b>ระบบ Ranking:</b> ผู้เล่นร่วมแมพ 20 ตัว ล่ากินปลาตัวอื่นเพื่อชิงอันดับ 1</li>
+      <li><b>ก้นทะเล:</b> ยิ่งว่ายลงลึก น้ำจะยิ่งมืด สมจริง</li>
+    </ul>
+    <button onclick="menu()">กลับ</button>
+  `;
+}
+
+function statsPanel(title, btnText, nextFn){
+  S.mode='panel'; ov.className='';
+  $('boss-warning').style.display='none';
+  const expGained = Math.floor(S.score / 2) + (S.mainEaten * 30);
+  const moneyGained = Math.floor(S.score / 3) + (S.mainEaten * 20);
+  
+  playerProgress.exp += expGained;
+  playerProgress.money += moneyGained;
+
+  let levelUpMsg = "";
+  const reqExp = playerProgress.level * 400;
+  if(playerProgress.exp >= reqExp){
+    playerProgress.exp -= reqExp;
+    playerProgress.level++;
+    levelUpMsg = "<br><b style='color:#73ff73'>🎉 เลเวลอัปเป็น Lv."+playerProgress.level+" แล้ว!</b>";
+  }
+  if(S.score > playerProgress.bestScore) playerProgress.bestScore = S.score;
+  saveGame();
+
+  ov.innerHTML = `
+    <h1>${title}</h1>
+    <p>
+      อันดับของคุณ: <b>#${S.rank}</b> / 20<br>
+      ได้รับเงิน: +💰 ${moneyGained} · ได้รับ EXP: +${expGained}${levelUpMsg}<br>
+      กินตัวหลักไปทั้งหมด: ${S.mainEaten} ตัว
+    </p>
+    <div class="btn-group">
+      <button id="pb" class="special">${btnText}</button>
+      <button onclick="menu()">กลับหน้าหลัก</button>
+    </div>
+  `;
+  $('pb').onclick = nextFn;
+}
+
+function startGame(){ Object.assign(S,{stage:1,score:0,eaten:0,mainEaten:0}); beginStage(); }
+function beginStage(){
+  Object.assign(S,{
+    mode:'play', time:180, fish:[], parts:[], divers:[],
+    ban:3, bt:'ด่าน '+S.stage, bossSpawned:false
+  });
+  P.kids=[]; P.x=WORLD.w/2; P.y=WORLD.h/2; P.vx=P.vy=0; P.air=100; P.isAboveWater=false;
+  P.hue = (playerProgress.fishTier * 45) % 360;
+
+  generateWorld();
+  
+  // สร้าง AI 19 ตัว (+ ตัวเราเป็น 20 คน)
+  for(let i=0; i<19; i++){
+    spawnAI(i < 3); // 3 ตัวแรกสุ่มให้โหดกว่าผู้เล่น
+  }
+
+  ov.className='hide';
+}
+
+function die(){
+  snd('die'); S.mode='dead';
+  setTimeout(()=> statsPanel('คุณตรุยแล้วนะ (ขาดอากาศ/ถูกกิน)', 'เล่นอีกครั้ง', startGame), 600);
+}
+
+function win(){
+  snd('win');
+  statsPanel('🏆 ชนะแล้ว! คุณเป็นอันดับ 1 ของท้องทะเล', 'ด่านถัดไป', ()=>{ S.stage++; beginStage(); });
+}
+
+const kpos = (pX, pY, pR, i, t) => {
+  const a = t * 1.6 + i * 2.399;
+  const r = pR * 1.25 + 5 * u * Math.sqrt(i + 1);
+  return [pX + Math.cos(a)*r, pY + Math.sin(a)*r];
+};
+
+function getZoneRadius(pR, kidsCount){
+  return (pR * 1.35 + 5 * u * Math.sqrt(kidsCount + 1)) + 25 * u;
+}
+
+function burst(x,y,h){
+  for(let i=0;i<10;i++) S.parts.push({x,y,vx:(Math.random()-.5)*200,vy:(Math.random()-.5)*200,l:.6,h});
+}
+
+function spawnAI(forceStrong){
+  const spawnX = Math.random() * WORLD.w;
+  const spawnY = WORLD.surfaceY + 100 + Math.random() * (WORLD.h - WORLD.surfaceY - 200);
+
+  let r = forceStrong ? P.r * (1.4 + Math.random()*0.8) : P.r * (.6 + Math.random() * 1.1);
+  r = Math.max(12 * u, r);
+  const hue = Math.random()*360;
+  const k = Math.max(0, Math.round(r / (4.5 * u)));
+
+  const f = {
+    x: spawnX, y: spawnY, r, vx: (Math.random()-.5)*80*u, vy: (Math.random()-.5)*20*u,
+    dir: 1, hue, kids: [], type: 'fish', lazyTime: 0
+  };
+
+  for(let j=0; j<k; j++) f.kids.push(hue);
+  S.fish.push(f);
+}
+
+/* ---------- อัปเดตลูปเกม ---------- */
+function update(dt){
+  S.t += dt;
+  if(S.mode !== 'play') return;
+
+  S.time -= dt;
+  if(S.time <= 0){ win(); return; }
+
+  // กิน AI หมด 19 ตัว = ชนะทันที
+  if(S.fish.length === 0){ S.rank = 1; win(); return; }
+
+  S.ban = Math.max(0, S.ban - dt);
+
+  // คำนวณอันดับ Ranking
+  let biggerCount = 0;
+  for(const f of S.fish){
+    if(f.r > P.r || f.kids.length > P.kids.length) biggerCount++;
+  }
+  S.rank = biggerCount + 1;
+
+  P.r = Math.min(70 * u, (12 + (playerProgress.fishTier * 1.5) + P.kids.length * 0.35) * u);
+  let baseSpeed = (210 + playerProgress.fishTier * 8) * u;
+
+  // การกระโดดเหนือน้ำแบบสมบูรณ์
+  if(P.y < WORLD.surfaceY){
+    if(!P.isAboveWater){
+      P.isAboveWater = true;
+      P.jumpVy = -380 * u; // พุ่งขึ้นฟ้า
+      snd('splash'); burst(P.x, WORLD.surfaceY, 190);
+    }
+    
+    // ฟิสิกส์ลอยกลางอากาศ แล้วตกลงมา
+    P.jumpVy += 750 * u * dt;
+    P.y += P.jumpVy * dt;
+    P.x += P.vx * dt;
+
+    // ระบบลดอากาศหายใจบนบก
+    P.air -= dt * 35;
+    if(P.air <= 0){ die(); return; }
+  } else {
+    P.isAboveWater = false;
+    P.air = Math.min(100, P.air + dt * 80); // ฟื้นอากาศใต้น้ำ
+
+    P.vx += (touchDir.x * baseSpeed - P.vx) * Math.min(1, dt * 8);
+    P.vy += (touchDir.y * baseSpeed - P.vy) * Math.min(1, dt * 8);
+
+    P.x = clamp(P.x + P.vx * dt, P.r, WORLD.w - P.r);
+    P.y = clamp(P.y + P.vy * dt, WORLD.surfaceY, WORLD.h - P.r); // ห้ามเลยก้นทะเล
+  }
+
+  if(Math.abs(P.vx) > .1) P.dir = P.vx > 0 ? 1 : -1;
+
+  // กล้องขยายตามขนาดวง
+  const playerZoneR = getZoneRadius(P.r, P.kids.length);
+  camera.zoom = clamp(1.0 - (P.kids.length * 0.008), 0.52, 1.0);
+
+  const targetCamX = P.x - (W/2)/camera.zoom;
+  const targetCamY = P.y - (H/2)/camera.zoom;
+  camera.x += (targetCamX - camera.x) * dt * 5;
+  camera.y += (targetCamY - camera.y) * dt * 5;
+
+  // กินลูกปลาฟรีสีส้ม
+  for(let i = wildFish.length - 1; i >= 0; i--){
+    const wf = wildFish[i];
+    if(Math.hypot(P.x - wf.x, P.y - wf.y) < playerZoneR){
+      P.kids.push(P.hue);
+      S.eaten++; snd('eat'); burst(wf.x, wf.y, P.hue);
+      wildFish.splice(i, 1);
+    }
+  }
+
+  // AI ปลาตัวอื่น (ว่ายไล่เรา และขี้เกียจตามหากว่ายหนี)
+  for(let i = S.fish.length - 1; i >= 0; i--){
+    const f = S.fish[i];
+    const distP = Math.hypot(P.x - f.x, P.y - f.y);
+
+    if(f.r > P.r * 1.1 && distP < 450 * u && f.lazyTime <= 0){
+      // AI ตัวใหญ่ว่ายไล่จับเรา!
+      f.vx += ((P.x - f.x) / distP * 120 * u - f.vx) * dt * 3;
+      f.vy += ((P.y - f.y) / distP * 120 * u - f.vy) * dt * 3;
+
+      // ถ้าผู้เล่นว่ายหนีไกลๆ AI จะขี้เกียจตาม
+      if(distP > 350 * u) f.lazyTime = 4; // พักขี้เกียจไล่ 4 วินาที
+    } else {
+      if(f.lazyTime > 0) f.lazyTime -= dt;
+      // AI ว่ายเล่นตามปกติ
+      if(Math.random() < 0.02){ f.vx = (Math.random()-.5)*100*u; f.vy = (Math.random()-.5)*40*u; }
+    }
+
+    f.x = clamp(f.x + f.vx * dt, f.r, WORLD.w - f.r);
+    f.y = clamp(f.y + f.vy * dt, WORLD.surfaceY + f.r, WORLD.h - f.r);
+    f.dir = f.vx > 0 ? 1 : -1;
+
+    // ชนกินกันเอง
+    if(distP < P.r + f.r * 0.8){
+      if(P.r >= f.r * 0.95 || P.kids.length > f.kids.length){
+        burst(f.x, f.y, f.hue); S.score += 150 + f.kids.length * 10;
+        S.mainEaten++; S.eaten++;
+        for(let k=0; k<f.kids.length; k++) P.kids.push(P.hue);
+        S.fish.splice(i, 1); snd('eat'); continue;
+      } else {
+        die(); return;
+      }
+    }
+  }
+
+  for(let i=S.parts.length-1;i>=0;i--){
+    const p=S.parts[i]; p.x+=p.vx*dt; p.y+=p.vy*dt; p.l-=dt;
+    if(p.l<=0) S.parts.splice(i,1);
+  }
+}
+
+/* ---------- การวาดกราฟิก ---------- */
+function drawRealFish(x, y, r, dir, hue){
+  ctx.save();
+  ctx.translate((x - camera.x)*camera.zoom, (y - camera.y)*camera.zoom);
+  ctx.scale(dir * camera.zoom, camera.zoom);
+
+  ctx.fillStyle = 'hsl('+hue+', 85%, 52%)';
+  ctx.beginPath(); ctx.ellipse(0, 0, r, r*0.55, 0, 0, Math.PI*2); ctx.fill();
+
+  ctx.beginPath(); ctx.moveTo(-r*0.7, 0);
+  ctx.quadraticCurveTo(-r*1.2, -r*0.5, -r*1.4, -r*0.3);
+  ctx.lineTo(-r*1.4, r*0.3);
+  ctx.quadraticCurveTo(-r*1.2, r*0.5, -r*0.7, 0); ctx.fill();
+
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(r*0.45, -r*0.12, Math.max(2, r*0.18), 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(r*0.5, -r*0.12, Math.max(1, r*0.09), 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+function drawAura(x, y, r, color){
+  ctx.save();
+  ctx.translate((x - camera.x)*camera.zoom, (y - camera.y)*camera.zoom);
+  ctx.strokeStyle = color; ctx.lineWidth = 2 * u * camera.zoom;
+  ctx.beginPath(); ctx.arc(0, 0, r * camera.zoom, 0, Math.PI*2); ctx.stroke();
+  ctx.restore();
+}
+
+// วาดสภาพแวดล้อมท้องทะเล ยิ่งลึกยิ่งมืด
+function drawEnvironment(){
+  const surfaceYOnCam = (WORLD.surfaceY - camera.y)*camera.zoom;
+  
+  // ท้องฟ้า
+  ctx.fillStyle = '#87ceeb'; ctx.fillRect(0, 0, W, surfaceYOnCam);
+  
+  // น้ำทะเลไล่ระดับความลึก (ยิ่งลึกยิ่งมืด)
+  const g = ctx.createLinearGradient(0, surfaceYOnCam, 0, (WORLD.h - camera.y)*camera.zoom);
+  g.addColorStop(0, '#00b4d8'); g.addColorStop(0.4, '#0077b6'); g.addColorStop(1, '#021226');
+  ctx.fillStyle = g; ctx.fillRect(0, surfaceYOnCam, W, H - surfaceYOnCam);
+
+  // วาดเรือสวยงาม
+  for(const b of boats){
+    const bx = (b.x - camera.x)*camera.zoom, by = (b.y - camera.y)*camera.zoom;
+    ctx.fillStyle = '#8d6e63'; ctx.fillRect(bx, by, 110*camera.zoom, 22*camera.zoom);
+    ctx.fillStyle = '#e0e0e0'; ctx.fillRect(bx+30*camera.zoom, by-20*camera.zoom, 40*camera.zoom, 20*camera.zoom);
+  }
+
+  // พื้นก้นทะเล (จุดสิ้นสุดใต้ทะเล)
+  const floorY = (WORLD.h - camera.y)*camera.zoom;
+  ctx.fillStyle = '#1c2833'; ctx.fillRect(0, floorY, W, H);
+
+  // วาดก้อนหินเทาสมจริงก้นทะเล
+  for(const r of rocks){
+    const rx = (r.x - camera.x)*camera.zoom, ry = (r.y - camera.y)*camera.zoom, rr = r.r*camera.zoom;
+    ctx.fillStyle = 'hsl(210, 10%, '+r.shade+'%)';
+    ctx.beginPath(); ctx.arc(rx, ry, rr, 0, Math.PI*2); ctx.fill();
+  }
+
+  // วาดปะการังน่ารัก
+  for(const c of corals){
+    const cx = (c.x - camera.x)*camera.zoom, cy = (c.y - camera.y)*camera.zoom, cs = c.size*camera.zoom;
+    ctx.fillStyle = 'hsl('+c.hue+', 80%, 60%)';
+    ctx.beginPath(); ctx.arc(cx, cy, cs, Math.PI, 0); ctx.fill();
+  }
+
+  // สาหร่ายพริ้วไหว
+  ctx.strokeStyle = '#27ae60'; ctx.lineWidth = 5 * camera.zoom; ctx.lineCap = 'round';
+  for(const sw of seaweeds){
+    const sx = (sw.x - camera.x)*camera.zoom, sy = (sw.y - camera.y)*camera.zoom, sh = sw.h*camera.zoom;
+    const sway = Math.sin(S.t * 2 + sw.phase) * 20 * camera.zoom;
+    ctx.beginPath(); ctx.moveTo(sx, sy);
+    ctx.quadraticCurveTo(sx + sway, sy - sh*0.5, sx, sy - sh); ctx.stroke();
+  }
+}
+
+function draw(){
+  drawEnvironment();
+  if(S.mode==='menu'||S.mode==='help') return;
+
+  for(const wf of wildFish) drawRealFish(wf.x, wf.y, wf.r, 1, wf.hue);
+
+  for(const f of S.fish){
+    drawAura(f.x, f.y, getZoneRadius(f.r, f.kids.length), 'rgba(255,255,255,0.25)');
+    drawRealFish(f.x, f.y, f.r, f.dir, f.hue);
+    for(let j=0; j<f.kids.length; j++){
+      const kp = kpos(f.x, f.y, f.r, j, S.t);
+      drawRealFish(kp[0], kp[1], 4*u, 1, f.kids[j]);
+    }
+  }
+
+  if(S.mode === 'play'){
+    drawAura(P.x, P.y, getZoneRadius(P.r, P.kids.length), '#ffb02e');
+  }
+
+  for(let i=0; i<P.kids.length; i++){
+    const kp = kpos(P.x, P.y, P.r, i, S.t);
+    drawRealFish(kp[0], kp[1], 4*u, 1, P.kids[i]);
+  }
+
+  if(S.mode !== 'dead') drawRealFish(P.x, P.y, P.r, P.dir, P.hue);
+
+  for(const p of S.parts){
+    ctx.fillStyle = 'hsla('+p.h+',90%,65%,'+p.l+')';
+    ctx.beginPath(); ctx.arc((p.x - camera.x)*camera.zoom, (p.y - camera.y)*camera.zoom, 3, 0, 7); ctx.fill();
+  }
+
+  hud();
+}
+
+function hud(){
+  ctx.textBaseline='top'; ctx.shadowColor='#000a'; ctx.shadowBlur=4; ctx.fillStyle='#fff6d6';
+  ctx.font='bold 18px sans-serif'; ctx.textAlign='left';
+  ctx.fillText('คะแนน '+S.score, 14, 10);
+  ctx.font='bold 14px sans-serif'; ctx.fillStyle='#ffb02e';
+  ctx.fillText('อันดับทะเล: #'+S.rank+' / '+(S.fish.length+1), 14, 34);
+
+  ctx.textAlign='right'; ctx.font='bold 15px sans-serif'; ctx.fillStyle='#73ff73';
+  ctx.fillText('เหลือ AI ในแมพ: '+S.fish.length+' ตัว', W - 14, 10);
+
+  // หลอดเตือนกลั้นหายใจบนบก
+  if(P.air < 100){
+    ctx.textAlign='center'; ctx.font='bold 16px sans-serif'; ctx.fillStyle='#ff4d4d';
+    ctx.fillText('⚠ คุณจะตรุยแล้วนะ! รีบลงน้ำด่วน (อากาศ: '+Math.ceil(P.air)+'%)', W/2, 45);
+  }
+
+  const tm = Math.max(0, Math.ceil(S.time)), mm = Math.floor(tm/60), ss = ('0'+tm%60).slice(-2);
+  ctx.textAlign='center'; ctx.font='bold 22px sans-serif'; ctx.fillStyle='#fff6d6';
+  ctx.fillText(mm+':'+ss, W/2, 8);
+
+  if(S.ban > 0){
+    ctx.textAlign='center'; ctx.font='bold 22px sans-serif'; ctx.fillStyle='#ff6b6b';
+    ctx.fillText(S.bt, W/2, H*.22);
+  }
+}
+
+/* ---------- ระบบสัมผัสซีกซ้าย ---------- */
+let touchDir = { x: 0, y: 0 };
+let touchStart = null;
+
+addEventListener('touchstart', e=>{
+  for(let i=0; i<e.changedTouches.length; i++){
+    const t = e.changedTouches[i];
+    if(t.clientX < W / 2){
+      touchStart = { x: t.clientX, y: t.clientY, id: t.identifier };
+    }
+  }
+});
+
+addEventListener('touchmove', e=>{
+  if(!touchStart) return;
+  for(let i=0; i<e.changedTouches.length; i++){
+    const t = e.changedTouches[i];
+    if(t.identifier === touchStart.id){
+      let dx = t.clientX - touchStart.x;
+      let dy = t.clientY - touchStart.y;
+      let dist = Math.hypot(dx, dy);
+      if(dist > 5){
+        touchDir.x = dx / dist;
+        touchDir.y = dy / dist;
+      }
+    }
+  }
+});
+
+const tend = e => {
+  if(!touchStart) return;
+  for(let i=0; i<e.changedTouches.length; i++){
+    if(e.changedTouches[i].identifier === touchStart.id){
+      touchStart = null; touchDir.x = 0; touchDir.y = 0;
+    }
+  }
+};
+addEventListener('touchend', tend); addEventListener('touchcancel', tend);
+
+addEventListener('keydown', e=> keys[e.code]=1);
+addEventListener('keyup', e=> keys[e.code]=0);
+
+let last = performance.now();
+function loop(n){
+  const dt = Math.min(.05, (n - last)/1000); last = n;
+  
+  if(!touchStart){
+    touchDir.x = (keys.ArrowRight||keys.KeyD?1:0) - (keys.ArrowLeft||keys.KeyA?1:0);
+    touchDir.y = (keys.ArrowDown||keys.KeyS?1:0) - (keys.ArrowUp||keys.KeyW?1:0);
+  }
+
+  update(dt); draw(); requestAnimationFrame(loop);
+}
+
+menu(); requestAnimationFrame(loop);
+</script>
+</body>
+</html>
